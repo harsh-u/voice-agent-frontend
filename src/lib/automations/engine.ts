@@ -506,7 +506,7 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
         .select(cfg.operand)
         .eq('id', args.contactId)
         .maybeSingle()
-      const v = (data as Record<string, unknown> | null)?.[cfg.operand]
+      const v = (data as unknown as Record<string, unknown> | null)?.[cfg.operand]
       return v != null && String(v) === String(cfg.value ?? '')
     }
     case 'message_content': {

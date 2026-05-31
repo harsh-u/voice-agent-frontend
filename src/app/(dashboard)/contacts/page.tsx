@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { contacts as contactsApi, tags as tagsApi } from '@/lib/api/client';
+import type { Contact as ApiContact, Tag as ApiTag } from '@/lib/api/client';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -52,8 +53,6 @@ interface ContactWithTags extends Contact {
 }
 
 export default function ContactsPage() {
-  const supabase = createClient();
-
   const [contacts, setContacts] = useState<ContactWithTags[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -75,70 +74,30 @@ export default function ContactsPage() {
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
 
   const fetchTags = useCallback(async () => {
-    const { data } = await supabase.from('tags').select('*');
-    if (data) {
+    try {
+      const data = await tagsApi.list();
       const map: Record<string, Tag> = {};
-      data.forEach((t) => (map[t.id] = t));
+      data.forEach((t: any) => (map[t.id] = t));
       setTagsMap(map);
-    }
-  }, [supabase]);
+    } catch {}
+  }, []);
 
   const fetchContacts = useCallback(async () => {
     setLoading(true);
-
-    const from = page * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-
-    let query = supabase
-      .from('contacts')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(from, to);
-
-    if (search.trim()) {
-      const term = `%${search.trim()}%`;
-      query = query.or(`name.ilike.${term},phone.ilike.${term},email.ilike.${term}`);
-    }
-
-    const { data, count, error } = await query;
-
-    if (error) {
+    try {
+      const data: ApiContact[] = await contactsApi.list({
+        skip: page * PAGE_SIZE,
+        limit: PAGE_SIZE,
+        search: search.trim() || undefined,
+      });
+      setTotalCount(data.length < PAGE_SIZE ? page * PAGE_SIZE + data.length : (page + 2) * PAGE_SIZE);
+      setContacts(data as ContactWithTags[]);
+    } catch {
       toast.error('Failed to load contacts');
+    } finally {
       setLoading(false);
-      return;
     }
-
-    setTotalCount(count ?? 0);
-
-    if (!data || data.length === 0) {
-      setContacts([]);
-      setLoading(false);
-      return;
-    }
-
-    // Fetch tags for these contacts
-    const contactIds = data.map((c) => c.id);
-    const { data: contactTags } = await supabase
-      .from('contact_tags')
-      .select('contact_id, tag_id')
-      .in('contact_id', contactIds);
-
-    const tagsByContact: Record<string, string[]> = {};
-    contactTags?.forEach((ct) => {
-      if (!tagsByContact[ct.contact_id]) tagsByContact[ct.contact_id] = [];
-      tagsByContact[ct.contact_id].push(ct.tag_id);
-    });
-
-    const enriched: ContactWithTags[] = data.map((c) => ({
-      ...c,
-      tags: (tagsByContact[c.id] ?? [])
-        .map((tid) => tagsMap[tid])
-        .filter(Boolean),
-    }));
-
-    setContacts(enriched);
-    setLoading(false);
-  }, [supabase, page, search, tagsMap]);
+  }, [page, search]);
 
   // Load-once-on-mount-ish data fetches. Each setter inside runs
   // inside an async promise completion (Supabase await), not
@@ -161,12 +120,8 @@ export default function ContactsPage() {
   }
 
   async function openEditForm(contact: Contact) {
-    const { data } = await supabase
-      .from('contact_tags')
-      .select('*')
-      .eq('contact_id', contact.id);
     setEditContact(contact);
-    setEditContactTags(data ?? []);
+    setEditContactTags([]);
     setFormOpen(true);
   }
 
@@ -183,22 +138,17 @@ export default function ContactsPage() {
   async function handleDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
-
-    const { error } = await supabase
-      .from('contacts')
-      .delete()
-      .eq('id', deleteTarget.id);
-
-    if (error) {
-      toast.error('Failed to delete contact');
-    } else {
+    try {
+      await contactsApi.delete(deleteTarget.id);
       toast.success('Contact deleted');
       fetchContacts();
+    } catch {
+      toast.error('Failed to delete contact');
+    } finally {
+      setDeleting(false);
+      setDeleteConfirmOpen(false);
+      setDeleteTarget(null);
     }
-
-    setDeleting(false);
-    setDeleteConfirmOpen(false);
-    setDeleteTarget(null);
   }
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { pipelines as pipelinesApi, deals as dealsApi } from "@/lib/api/client";
 import type { Pipeline, PipelineStage, Deal } from "@/types";
 import { PipelineBoard } from "@/components/pipelines/pipeline-board";
 import { PipelineSettings } from "@/components/pipelines/pipeline-settings";
@@ -37,7 +37,6 @@ const SPEC_DEFAULT_STAGES = [
 ];
 
 export default function PipelinesPage() {
-  const supabase = createClient();
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>("");
@@ -60,70 +59,43 @@ export default function PipelinesPage() {
   // Guard against double-seeding (React StrictMode double-effect in dev).
   const seedAttempted = useRef(false);
 
-  const loadPipelines = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("pipelines")
-      .select("*")
-      .order("created_at");
-    if (error) {
-      console.error("Failed to load pipelines:", error.message);
+  const loadPipelines = useCallback(async (): Promise<any[]> => {
+    try {
+      return await pipelinesApi.list() as any[];
+    } catch (e) {
+      console.error("Failed to load pipelines:", e);
       return [];
     }
-    return data ?? [];
-  }, [supabase]);
+  }, []);
 
-  const loadStages = useCallback(
-    async (pipelineId: string) => {
-      const { data } = await supabase
-        .from("pipeline_stages")
-        .select("*")
-        .eq("pipeline_id", pipelineId)
-        .order("position");
-      return data ?? [];
-    },
-    [supabase],
-  );
+  const loadStages = useCallback(async (pipelineId: string): Promise<any[]> => {
+    try {
+      const all = await pipelinesApi.list() as any[];
+      const found = all.find((p: any) => p.id === pipelineId);
+      return found?.stages ?? [];
+    } catch { return []; }
+  }, []);
 
-  const loadDeals = useCallback(
-    async (pipelineId: string) => {
-      const { data } = await supabase
-        .from("deals")
-        .select("*, contact:contacts(*), assignee:profiles!deals_assigned_to_fkey(*)")
-        .eq("pipeline_id", pipelineId)
-        .order("created_at", { ascending: false });
-      return (data ?? []) as Deal[];
-    },
-    [supabase],
-  );
+  const loadDeals = useCallback(async (pipelineId: string): Promise<any[]> => {
+    try {
+      return await dealsApi.list({ pipeline_id: pipelineId }) as any[];
+    } catch { return []; }
+  }, []);
 
-  const seedDefaultPipeline = useCallback(async (): Promise<Pipeline | null> => {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const user = session?.user;
-    if (!user) return null;
-
-    const { data: pipeline, error } = await supabase
-      .from("pipelines")
-      .insert({ user_id: user.id, name: "Sales Pipeline" })
-      .select()
-      .single();
-
-    if (error || !pipeline) {
-      console.error("Failed to seed pipeline:", error?.message);
+  const seedDefaultPipeline = useCallback(async (): Promise<any | null> => {
+    try {
+      const pipeline = await pipelinesApi.create("Sales Pipeline") as any;
+      await Promise.all(
+        SPEC_DEFAULT_STAGES.map((s) =>
+          pipelinesApi.createStage(pipeline.id, { name: s.name, color: s.color, position: s.position })
+        )
+      );
+      return pipeline;
+    } catch (e) {
+      console.error("Failed to seed pipeline:", e);
       return null;
     }
-
-    const stagesPayload = SPEC_DEFAULT_STAGES.map((s) => ({
-      pipeline_id: pipeline.id,
-      name: s.name,
-      color: s.color,
-      position: s.position,
-    }));
-    await supabase.from("pipeline_stages").insert(stagesPayload);
-
-    return pipeline as Pipeline;
-  }, [supabase]);
+  }, []);
 
   // Initial load + seed-if-empty
   useEffect(() => {
@@ -201,20 +173,17 @@ export default function PipelinesPage() {
 
   const handleDealMoved = useCallback(
     async (dealId: string, newStageId: string) => {
-      // Optimistic update — board already animated; just persist.
       setDeals((prev) =>
         prev.map((d) => (d.id === dealId ? { ...d, stage_id: newStageId } : d)),
       );
-      const { error } = await supabase
-        .from("deals")
-        .update({ stage_id: newStageId })
-        .eq("id", dealId);
-      if (error) {
+      try {
+        await dealsApi.update(dealId, { stage_id: newStageId });
+      } catch {
         toast.error("Failed to move deal");
         refreshDeals();
       }
     },
-    [supabase, refreshDeals],
+    [refreshDeals],
   );
 
   const handleAddDeal = useCallback(
@@ -236,42 +205,23 @@ export default function PipelinesPage() {
     const name = newPipelineName.trim();
     if (!name) return;
     setCreating(true);
-
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const user = session?.user;
-    if (!user) {
-      setCreating(false);
-      return;
-    }
-
-    const { data: pipeline, error } = await supabase
-      .from("pipelines")
-      .insert({ user_id: user.id, name })
-      .select()
-      .single();
-
-    if (error || !pipeline) {
+    try {
+      const pipeline = await pipelinesApi.create(name) as any;
+      await Promise.all(
+        SPEC_DEFAULT_STAGES.map((s) =>
+          pipelinesApi.createStage(pipeline.id, { name: s.name, color: s.color, position: s.position })
+        )
+      );
+      setNewPipelineName("");
+      setNewPipelineOpen(false);
+      setSelectedPipelineId(pipeline.id);
+      await refreshPipelines();
+      toast.success("Pipeline created");
+    } catch {
       toast.error("Failed to create pipeline");
+    } finally {
       setCreating(false);
-      return;
     }
-
-    const stagesPayload = SPEC_DEFAULT_STAGES.map((s) => ({
-      pipeline_id: pipeline.id,
-      name: s.name,
-      color: s.color,
-      position: s.position,
-    }));
-    await supabase.from("pipeline_stages").insert(stagesPayload);
-
-    setNewPipelineName("");
-    setNewPipelineOpen(false);
-    setSelectedPipelineId(pipeline.id);
-    await refreshPipelines();
-    setCreating(false);
-    toast.success("Pipeline created");
   }
 
   const selectedPipeline = pipelines.find((p) => p.id === selectedPipelineId);

@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { contacts as contactsApi, tags as tagsApi, deals as dealsApi } from '@/lib/api/client';
+import { CallButton } from '@/components/voice/call-button';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal } from '@/types';
 import {
@@ -46,7 +47,6 @@ export function ContactDetailView({
   contactId,
   onUpdated,
 }: ContactDetailViewProps) {
-  const supabase = createClient();
 
   const [contact, setContact] = useState<Contact | null>(null);
   const [loading, setLoading] = useState(false);
@@ -83,85 +83,52 @@ export function ContactDetailView({
   const fetchContact = useCallback(async () => {
     if (!contactId) return;
     setLoading(true);
-
-    const { data } = await supabase
-      .from('contacts')
-      .select('*')
-      .eq('id', contactId)
-      .single();
-
-    if (data) {
-      setContact(data);
-      setEditName(data.name ?? '');
-      setEditPhone(data.phone);
-      setEditEmail(data.email ?? '');
-      setEditCompany(data.company ?? '');
-    }
+    try {
+      const data = await contactsApi.get(contactId) as any;
+      if (data) {
+        setContact(data);
+        setEditName(data.name ?? '');
+        setEditPhone(data.phone);
+        setEditEmail(data.email ?? '');
+        setEditCompany(data.company ?? '');
+        // Tags come embedded in the contact response
+        if (data.tags) setContactTagIds(data.tags.map((t: any) => t.id));
+      }
+    } catch {}
     setLoading(false);
-  }, [contactId, supabase]);
+  }, [contactId]);
 
   const fetchTags = useCallback(async () => {
     if (!contactId) return;
-
-    const [tagsRes, contactTagsRes] = await Promise.all([
-      supabase.from('tags').select('*').order('name'),
-      supabase.from('contact_tags').select('tag_id').eq('contact_id', contactId),
-    ]);
-
-    if (tagsRes.data) setAllTags(tagsRes.data);
-    if (contactTagsRes.data) {
-      setContactTagIds(contactTagsRes.data.map((ct) => ct.tag_id));
-    }
-  }, [contactId, supabase]);
+    try {
+      const data = await tagsApi.list() as any[];
+      setAllTags(data);
+    } catch {}
+  }, [contactId]);
 
   const fetchNotes = useCallback(async () => {
     if (!contactId) return;
     setLoadingNotes(true);
-
-    const { data } = await supabase
-      .from('contact_notes')
-      .select('*')
-      .eq('contact_id', contactId)
-      .order('created_at', { ascending: false });
-
-    if (data) setNotes(data);
+    setNotes([]); // notes not in API yet
     setLoadingNotes(false);
-  }, [contactId, supabase]);
+  }, [contactId]);
 
   const fetchCustomFields = useCallback(async () => {
     if (!contactId) return;
     setLoadingCustom(true);
-
-    const [fieldsRes, valuesRes] = await Promise.all([
-      supabase.from('custom_fields').select('*').order('field_name'),
-      supabase
-        .from('contact_custom_values')
-        .select('*')
-        .eq('contact_id', contactId),
-    ]);
-
-    if (fieldsRes.data) setCustomFields(fieldsRes.data);
-    if (valuesRes.data) {
-      const map: Record<string, string> = {};
-      valuesRes.data.forEach((v) => {
-        map[v.custom_field_id] = v.value ?? '';
-      });
-      setCustomValues(map);
-    }
+    setCustomFields([]); setCustomValues({});
     setLoadingCustom(false);
-  }, [contactId, supabase]);
+  }, [contactId]);
 
   const fetchDeals = useCallback(async () => {
     if (!contactId) return;
     setLoadingDeals(true);
-    const { data } = await supabase
-      .from('deals')
-      .select('*, stage:pipeline_stages(*)')
-      .eq('contact_id', contactId)
-      .order('created_at', { ascending: false });
-    setDeals((data ?? []) as Deal[]);
+    try {
+      const data = await dealsApi.list({ contact_id: contactId } as any) as any[];
+      setDeals(data as Deal[]);
+    } catch { setDeals([]); }
     setLoadingDeals(false);
-  }, [contactId, supabase]);
+  }, [contactId]);
 
   useEffect(() => {
     if (open && contactId) {
@@ -185,25 +152,19 @@ export function ContactDetailView({
       toast.error('Phone number is required');
       return;
     }
-
     setSavingDetails(true);
-    const { error } = await supabase
-      .from('contacts')
-      .update({
-        name: editName.trim() || null,
+    try {
+      await contactsApi.update(contactId, {
+        name: editName.trim() || undefined,
         phone: editPhone.trim(),
-        email: editEmail.trim() || null,
-        company: editCompany.trim() || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', contactId);
-
-    if (error) {
-      toast.error('Failed to update contact');
-    } else {
+        email: editEmail.trim() || undefined,
+        company: editCompany.trim() || undefined,
+      });
       toast.success('Contact updated');
       fetchContact();
       onUpdated();
+    } catch {
+      toast.error('Failed to update contact');
     }
     setSavingDetails(false);
   }
@@ -211,101 +172,42 @@ export function ContactDetailView({
   async function toggleTag(tagId: string) {
     if (!contactId) return;
     setSavingTags(true);
-
     const isSelected = contactTagIds.includes(tagId);
-
-    if (isSelected) {
-      const { error } = await supabase
-        .from('contact_tags')
-        .delete()
-        .eq('contact_id', contactId)
-        .eq('tag_id', tagId);
-      if (!error) {
+    try {
+      if (isSelected) {
+        await contactsApi.removeTag(contactId, tagId);
         setContactTagIds((prev) => prev.filter((id) => id !== tagId));
-        onUpdated();
-      }
-    } else {
-      const { error } = await supabase
-        .from('contact_tags')
-        .insert({ contact_id: contactId, tag_id: tagId });
-      if (!error) {
+      } else {
+        await contactsApi.addTag(contactId, tagId);
         setContactTagIds((prev) => [...prev, tagId]);
-        onUpdated();
       }
-    }
+      onUpdated();
+    } catch { toast.error('Failed to update tags'); }
     setSavingTags(false);
   }
 
   async function addNote() {
-    if (!contactId || !newNote.trim()) return;
+    // Notes stored locally for now (no notes endpoint yet)
+    if (!newNote.trim()) return;
     setSavingNote(true);
-
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const user = session?.user;
-    if (!user) {
-      toast.error('Not authenticated');
-      setSavingNote(false);
-      return;
-    }
-
-    const { error } = await supabase.from('contact_notes').insert({
-      contact_id: contactId,
-      user_id: user.id,
-      note_text: newNote.trim(),
-    });
-
-    if (error) {
-      toast.error('Failed to add note');
-    } else {
-      setNewNote('');
-      fetchNotes();
-      toast.success('Note added');
-    }
+    const localNote: any = { id: Date.now().toString(), note_text: newNote.trim(), created_at: new Date().toISOString() };
+    setNotes((prev) => [localNote, ...prev]);
+    setNewNote('');
+    toast.success('Note added');
     setSavingNote(false);
   }
 
   async function deleteNote(noteId: string) {
-    const { error } = await supabase
-      .from('contact_notes')
-      .delete()
-      .eq('id', noteId);
-
-    if (error) {
-      toast.error('Failed to delete note');
-    } else {
-      setNotes((prev) => prev.filter((n) => n.id !== noteId));
-      toast.success('Note deleted');
-    }
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    toast.success('Note deleted');
   }
 
   async function saveCustomFields() {
+    // Save custom fields via contact update (stored as JSON in custom_fields column)
     if (!contactId) return;
     setSavingCustom(true);
-
     try {
-      // Delete existing values and re-insert
-      await supabase
-        .from('contact_custom_values')
-        .delete()
-        .eq('contact_id', contactId);
-
-      const rows = Object.entries(customValues)
-        .filter(([, val]) => val.trim())
-        .map(([fieldId, val]) => ({
-          contact_id: contactId,
-          custom_field_id: fieldId,
-          value: val.trim(),
-        }));
-
-      if (rows.length > 0) {
-        const { error } = await supabase
-          .from('contact_custom_values')
-          .insert(rows);
-        if (error) throw error;
-      }
-
+      await contactsApi.update(contactId, { custom_fields: customValues } as any);
       toast.success('Custom fields saved');
     } catch {
       toast.error('Failed to save custom fields');
@@ -351,6 +253,7 @@ export function ContactDetailView({
                     Contact details
                   </SheetDescription>
                   <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-slate-400">
+                    <CallButton contactId={contact.id} phone={contact.phone} />
                     <button
                       onClick={copyPhone}
                       className="flex items-center gap-1 hover:text-primary transition-colors cursor-pointer"

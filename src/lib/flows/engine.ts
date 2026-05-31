@@ -492,7 +492,7 @@ async function evaluateConditionNode(
       .select(cfg.subject_key)
       .eq("id", run.contact_id!)
       .maybeSingle();
-    const raw = (data as Record<string, unknown> | null)?.[cfg.subject_key];
+    const raw = (data as unknown as Record<string, unknown> | null)?.[cfg.subject_key];
     subjectValue = typeof raw === "string" && raw.length > 0 ? raw : undefined;
   }
   return evaluateConditionPredicate({
