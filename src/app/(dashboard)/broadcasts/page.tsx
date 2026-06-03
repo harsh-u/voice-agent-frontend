@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { getToken } from '@/lib/api/client';
 import { Broadcast } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -13,8 +13,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Radio, Plus, Loader2 } from 'lucide-react';
+import { Radio, Plus, Loader2, Phone, MessageSquare } from 'lucide-react';
 import { getBroadcastStatus } from '@/lib/broadcast-status';
+import { VoiceBroadcastWizard } from '@/components/broadcasts/voice-broadcast-wizard';
+
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 /**
  * Poll cadence while any broadcast is sending. Kept modest so we don't
@@ -59,19 +62,16 @@ export default function BroadcastsPage() {
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showVoiceWizard, setShowVoiceWizard] = useState(false);
 
-  // Used to kick off polling only while something is actively sending.
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function fetchBroadcasts() {
     try {
-      const supabase = createClient();
-      const { data, error: fetchError } = await supabase
-        .from('broadcasts')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (fetchError) throw fetchError;
+      const token = getToken();
+      const res = await fetch(`${API}/broadcasts`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(res.statusText);
+      const data = await res.json();
       setBroadcasts(data ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load broadcasts');
@@ -178,17 +178,32 @@ export default function BroadcastsPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Broadcasts</h1>
           <p className="mt-1 text-sm text-slate-400">
-            Send bulk messages to your contacts using approved templates.
+            Send bulk messages or voice calls to your contacts at scale.
           </p>
         </div>
-        <Button
-          onClick={() => router.push('/broadcasts/new')}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4" />
-          New Broadcast
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => { setShowVoiceWizard(true); }}
+            className="border-green-600/40 bg-green-600/10 text-green-400 hover:bg-green-600/20 hover:text-green-300"
+          >
+            <Phone className="h-4 w-4" />
+            Voice Campaign
+          </Button>
+          <Button
+            onClick={() => router.push('/broadcasts/new')}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <MessageSquare className="h-4 w-4" />
+            WhatsApp Broadcast
+          </Button>
+        </div>
       </div>
+
+      {/* Inline voice broadcast wizard */}
+      {showVoiceWizard && (
+        <VoiceBroadcastWizard onCancel={() => setShowVoiceWizard(false)} />
+      )}
 
       {broadcasts.length === 0 ? (
         <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-slate-800 bg-slate-900">

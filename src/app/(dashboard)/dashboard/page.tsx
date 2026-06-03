@@ -10,6 +10,8 @@ import {
   PhoneCall,
   TrendingUp,
   RefreshCw,
+  Activity,
+  Zap,
 } from 'lucide-react'
 import { dashboard } from '@/lib/api/client'
 import type { DashboardMetrics } from '@/lib/api/client'
@@ -126,6 +128,17 @@ export default function DashboardPage() {
                 title="Avg Call Duration"
                 value={`${Math.round(metrics.avg_call_duration_seconds)}s`}
                 icon={Phone}
+              />
+              <MetricCard
+                title="Today's Voice Spend"
+                value={`$${(metrics.voice_spend_today_cents / 100).toFixed(3)}`}
+                icon={DollarSign}
+              />
+              <MetricCard
+                title="Answer Rate"
+                value={`${metrics.voice_answer_rate}%`}
+                icon={Activity}
+                delta={{ sign: metrics.outbound_calls_today, label: `${metrics.outbound_calls_today} outbound calls` }}
               />
             </>
           ) : null}

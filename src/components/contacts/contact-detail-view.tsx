@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { contacts as contactsApi, tags as tagsApi, deals as dealsApi } from '@/lib/api/client';
+import { contacts as contactsApi, tags as tagsApi, deals as dealsApi, getToken } from '@/lib/api/client';
 import { CallButton } from '@/components/voice/call-button';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal } from '@/types';
@@ -253,7 +253,7 @@ export function ContactDetailView({
                     Contact details
                   </SheetDescription>
                   <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-slate-400">
-                    <CallButton contactId={contact.id} phone={contact.phone} />
+                    <CallButton contactId={contact.id} phone={contact.phone} contactName={contact.name ?? undefined} />
                     <button
                       onClick={copyPhone}
                       className="flex items-center gap-1 hover:text-primary transition-colors cursor-pointer"
@@ -315,6 +315,12 @@ export function ContactDetailView({
                   className="data-active:bg-slate-800 data-active:text-primary text-slate-400"
                 >
                   Deals
+                </TabsTrigger>
+                <TabsTrigger
+                  value="calls"
+                  className="data-active:bg-slate-800 data-active:text-primary text-slate-400"
+                >
+                  Calls
                 </TabsTrigger>
               </TabsList>
 
@@ -579,10 +585,91 @@ export function ContactDetailView({
                   </div>
                 )}
               </TabsContent>
+
+              {/* Calls Tab */}
+              <TabsContent value="calls" className="flex-1 overflow-y-auto px-4 py-3">
+                <ContactCallHistory contactId={contactId} />
+              </TabsContent>
             </Tabs>
           </div>
         )}
       </SheetContent>
     </Sheet>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contact Call History (inline component)
+// ---------------------------------------------------------------------------
+
+function formatDur(s: number | null): string {
+  if (!s) return '—';
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function ContactCallHistory({ contactId }: { contactId: string | null }) {
+  const [callData, setCallData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!contactId) return;
+    const token = getToken();
+    const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    setLoading(true);
+    fetch(`${base}/contacts/${contactId}/calls`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.json())
+      .then(setCallData)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [contactId]);
+
+  if (loading) return <p className="text-xs text-slate-500 py-4 text-center">Loading call history…</p>;
+  if (callData.length === 0) return (
+    <div className="py-8 text-center">
+      <p className="text-sm text-slate-500">No calls yet for this contact</p>
+      <p className="mt-1 text-xs text-slate-600">Use the Call button above to initiate a voice call</p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      {callData.map((c: any) => (
+        <div key={c.id} className="rounded-lg border border-slate-800 bg-slate-900/50 overflow-hidden">
+          <div
+            className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-slate-800/40"
+            onClick={() => setExpanded(expanded === c.id ? null : c.id)}
+          >
+            <span className={`h-2 w-2 rounded-full shrink-0 ${c.status === 'completed' ? 'bg-green-500' : c.status === 'failed' ? 'bg-red-500' : 'bg-yellow-500'}`} />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-white capitalize">{c.direction} · {c.status}</p>
+              <p className="text-[10px] text-slate-500">{c.started_at ? new Date(c.started_at).toLocaleString() : '—'}</p>
+            </div>
+            <div className="shrink-0 text-right">
+              <p className="text-xs text-slate-400">{formatDur(c.duration_seconds)}</p>
+              {c.cost_cents && <p className="text-[10px] text-slate-600">${(c.cost_cents / 100).toFixed(3)}</p>}
+            </div>
+            {c.agent_name && <span className="text-[10px] rounded-full bg-primary/10 text-primary px-2 py-0.5 shrink-0">{c.agent_name}</span>}
+          </div>
+          {expanded === c.id && c.turns?.length > 0 && (
+            <div className="border-t border-slate-800 px-3 py-2 space-y-2 max-h-48 overflow-y-auto">
+              {c.turns.map((t: any) => (
+                <div key={t.id} className={`flex ${t.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-xs rounded-lg px-2.5 py-1.5 text-xs ${t.role === 'user' ? 'bg-primary/10 text-primary' : 'bg-slate-800 text-slate-200'}`}>
+                    <p className="mb-0.5 text-[10px] font-medium capitalize text-slate-500">{t.role}</p>
+                    {t.text}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {expanded === c.id && c.transcript_count === 0 && (
+            <p className="border-t border-slate-800 px-3 py-2 text-xs text-slate-600">No transcript available</p>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }

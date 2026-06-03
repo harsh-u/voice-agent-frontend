@@ -1,8 +1,66 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Phone, PhoneIncoming, PhoneOutgoing, Clock, DollarSign, Mic, ChevronDown, ChevronRight, Plus, Loader2, X, Download } from "lucide-react";
-import { calls, contacts as contactsApi, agents as agentsApi, type Call, type CallDetail, type Contact, type AgentConfig } from "@/lib/api/client";
+import { Phone, PhoneIncoming, PhoneOutgoing, Clock, DollarSign, Mic, ChevronDown, ChevronRight, Plus, Loader2, X, Download, Bot, Activity, RefreshCw, PhoneOff } from "lucide-react";
+import { calls, contacts as contactsApi, agents as agentsApi, getToken, type Call, type CallDetail, type Contact, type AgentConfig } from "@/lib/api/client";
+
+// ---------------------------------------------------------------------------
+// Active Call Monitor
+// ---------------------------------------------------------------------------
+function ActiveCallMonitor({ onRefresh }: { onRefresh: () => void }) {
+  const [active, setActive] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = () => {
+    const token = getToken();
+    const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    fetch(`${base}/calls/active`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json()).then(setActive).catch(() => {});
+  };
+
+  useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); }, []);
+
+  if (active.length === 0) return null;
+
+  const hangup = async (id: string) => {
+    await calls.hangup(id);
+    load(); onRefresh();
+  };
+
+  return (
+    <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="relative flex h-2.5 w-2.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
+        </span>
+        <span className="text-sm font-semibold text-blue-300">{active.length} live call{active.length > 1 ? "s" : ""}</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {active.map((c: any) => {
+          const mins = Math.floor(c.live_duration_seconds / 60);
+          const secs = c.live_duration_seconds % 60;
+          return (
+            <div key={c.id} className="flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-white truncate">
+                  {c.contact_name || c.to_number || c.from_number}
+                </p>
+                <p className="text-xs text-slate-400">
+                  {mins}:{String(secs).padStart(2, '0')} · ${(c.estimated_cost_cents / 100).toFixed(3)}
+                  {c.agent_name && <span className="ml-2 text-primary">{c.agent_name}</span>}
+                </p>
+              </div>
+              <button onClick={() => hangup(c.id)} className="rounded p-1 text-slate-500 hover:bg-red-500/10 hover:text-red-400">
+                <PhoneOff className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -259,23 +317,31 @@ export default function CallsPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("");
+  const [agentFilter, setAgentFilter] = useState("");
+  const [agentOptions, setAgentOptions] = useState<AgentConfig[]>([]);
   const LIMIT = 20;
+
+  useEffect(() => {
+    agentsApi.list().then(setAgentOptions).catch(() => {});
+  }, []);
 
   const loadCalls = () => {
     setLoading(true);
-    calls
-      .list({ page, limit: LIMIT, status: statusFilter || undefined })
-      .then((res) => {
-        setCallList(res.items);
-        setTotal(res.total);
-      })
+    const token = getToken();
+    const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const qs = new URLSearchParams({ page: String(page), limit: String(LIMIT) });
+    if (statusFilter) qs.set('status', statusFilter);
+    if (agentFilter) qs.set('agent_id', agentFilter);
+    fetch(`${base}/calls?${qs}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then((res) => { setCallList(res.items); setTotal(res.total); })
       .catch(console.error)
       .finally(() => setLoading(false));
   };
 
   useEffect(() => {
     loadCalls();
-  }, [page, statusFilter]);
+  }, [page, statusFilter, agentFilter]);
 
   const totalPages = Math.ceil(total / LIMIT);
 
@@ -287,7 +353,7 @@ export default function CallsPage() {
           <h1 className="text-xl font-semibold text-white">Calls</h1>
           <p className="text-sm text-slate-400">Voice call history and transcripts</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
@@ -299,9 +365,22 @@ export default function CallsPage() {
             <option value="dialing">Dialing</option>
             <option value="failed">Failed</option>
           </select>
+          {agentOptions.length > 0 && (
+            <select
+              value={agentFilter}
+              onChange={(e) => { setAgentFilter(e.target.value); setPage(1); }}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-300"
+            >
+              <option value="">All agents</option>
+              {agentOptions.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          )}
           <NewCallDialog onCallStarted={() => { setTimeout(loadCalls, 1500); }} />
         </div>
       </div>
+
+      {/* Active calls monitor */}
+      <ActiveCallMonitor onRefresh={loadCalls} />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -342,14 +421,26 @@ export default function CallsPage() {
                       : <PhoneOutgoing className="h-4 w-4 text-green-400" />}
                   </div>
 
-                  {/* Number + date */}
+                  {/* Number + contact + date */}
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-white">
-                      {call.direction === "inbound" ? call.from_number : call.to_number} ·{" "}
+                      {(call as any).contact_name ? (
+                        <span className="text-white">{(call as any).contact_name} · </span>
+                      ) : null}
+                      <span className="text-slate-300">{call.direction === "inbound" ? call.from_number : call.to_number}</span>
+                      {" · "}
                       <span className="capitalize text-slate-400">{call.direction}</span>
                     </p>
                     <p className="text-xs text-slate-500">{formatDate(call.started_at)}</p>
                   </div>
+
+                  {/* Agent badge */}
+                  {(call as any).agent_name && (
+                    <span className="flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                      <Bot className="h-2.5 w-2.5" />
+                      {(call as any).agent_name}
+                    </span>
+                  )}
 
                   {/* Duration */}
                   <div className="flex items-center gap-1 text-xs text-slate-400">

@@ -416,6 +416,7 @@ export interface DashboardMetrics {
   conversations_today: number; open_conversations: number; messages_today: number
   deals_open: number; deals_won: number; pipeline_value: number
   calls_today: number; active_calls: number; avg_call_duration_seconds: number
+  voice_spend_today_cents: number; voice_answer_rate: number; outbound_calls_today: number
 }
 export interface Call {
   id: string; direction: string; status: string; from_number?: string
