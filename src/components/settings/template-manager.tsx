@@ -12,8 +12,18 @@ import {
   Pencil,
   RotateCcw,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+import { getToken } from '@/lib/api/client';
 import { useAuth } from '@/hooks/use-auth';
+
+const _TMPL_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+async function _tmplFetch(path: string, opts: RequestInit = {}) {
+  const token = getToken();
+  const res = await fetch(`${_TMPL_BASE}${path}`, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(opts.headers || {}) },
+  });
+  return res;
+}
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -118,7 +128,6 @@ function emptyButton(type: TemplateButton['type']): TemplateButton {
 }
 
 export function TemplateManager() {
-  const supabase = createClient();
   const { user, loading: authLoading } = useAuth();
 
   const [loading, setLoading] = useState(true);
@@ -170,20 +179,16 @@ export function TemplateManager() {
       setLoading(false);
       return;
     }
-    fetchTemplates(user.id);
+    fetchTemplates();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user?.id]);
 
-  async function fetchTemplates(userId: string) {
+  async function fetchTemplates(_userId?: string) {
     try {
       setLoading(true);
-      const { data, error } = await supabase
-        .from('message_templates')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      setTemplates(data || []);
+      const res = await _tmplFetch('/whatsapp/templates');
+      const data = await res.json();
+      setTemplates(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('Failed to fetch templates:', err);
       toast.error('Failed to load templates');
@@ -245,37 +250,34 @@ export function TemplateManager() {
   }
 
   async function handleSubmit() {
-    // AUTHENTICATION is blocked by the persistent banner + disabled
-    // submit button; this is a defensive second line of defense.
     if (form.category === 'Authentication') return;
     try {
       setSubmitting(true);
-      const isEdit = editingId !== null;
-      const url = isEdit
-        ? `/api/whatsapp/templates/${editingId}`
-        : '/api/whatsapp/templates/submit';
-      const res = await fetch(url, {
-        method: isEdit ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildSubmitPayload()),
-      });
-      const data = await res.json();
+      const payload = buildSubmitPayload();
+      // Map to our FastAPI format
+      const apiPayload = {
+        name: payload.name,
+        language: payload.language,
+        category: payload.category,
+        // Pass raw payload as components for Meta submission
+        components: [
+          { type: 'BODY', text: payload.body_text },
+          ...(payload.footer_text ? [{ type: 'FOOTER', text: payload.footer_text }] : []),
+        ],
+      };
+
+      const res = await _tmplFetch(
+        editingId ? `/whatsapp/templates/${editingId}` : '/whatsapp/templates',
+        { method: editingId ? 'PATCH' : 'POST', body: JSON.stringify(apiPayload) }
+      );
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(
-          data?.error || `${isEdit ? 'Edit' : 'Submit'} failed (HTTP ${res.status})`,
-        );
+        throw new Error(data?.detail || `${editingId ? 'Edit' : 'Submit'} failed (HTTP ${res.status})`);
       }
-      // Refresh first, then close — re-opening the dialog
-      // immediately should not show a stale list.
-      if (user) await fetchTemplates(user.id);
-      toast.success(
-        data.dry_run
-          ? isEdit
-            ? 'Template updated (dry-run — no Meta call)'
-            : 'Template saved (dry-run — no Meta call)'
-          : isEdit
-            ? 'Edit submitted — Meta typically reviews within 24 hours.'
-            : 'Submitted to Meta — typical review time is 24 hours. Status updates automatically.',
+      await fetchTemplates();
+      toast.success(editingId
+        ? 'Template updated. Meta reviews edits within 24 hours.'
+        : 'Submitted to Meta — review typically takes 24 hours.'
       );
       setDialogOpen(false);
       setForm(emptyForm);
@@ -289,42 +291,12 @@ export function TemplateManager() {
   }
 
   async function handleSyncFromMeta() {
-    if (!user) return;
     setSyncing(true);
     try {
-      const res = await fetch('/api/whatsapp/templates/sync', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || `Sync failed (HTTP ${res.status})`);
-      }
-      toast.success(
-        `Synced ${data.total} template${data.total === 1 ? '' : 's'} from Meta` +
-          (data.inserted || data.updated
-            ? ` (${data.inserted} new, ${data.updated} updated)`
-            : ''),
-      );
-      if (Array.isArray(data.errors) && data.errors.length > 0) {
-        const preview = data.errors.slice(0, 3).map(
-          (e: { name: string; language: string; message: string }) =>
-            `${e.name} (${e.language})`,
-        );
-        const suffix =
-          data.errors.length > 3 ? `, +${data.errors.length - 3} more` : '';
-        toast.error(`Failed to sync: ${preview.join(', ')}${suffix}`);
-      }
-      if (data.truncated) {
-        // Use error (not warning) so the message survives long
-        // enough to read — sonner's `warning` auto-dismisses on
-        // the same short timer as `success`.
-        toast.error(
-          'Synced the first 2000 templates only — your account has more. Sync again to continue, or contact support if this persists.',
-          { duration: 10000 },
-        );
-      }
-      await fetchTemplates(user.id);
+      await fetchTemplates();
+      toast.success('Templates refreshed');
     } catch (err) {
-      console.error('Template sync error:', err);
-      toast.error(err instanceof Error ? err.message : 'Failed to sync templates');
+      toast.error('Failed to refresh templates');
     } finally {
       setSyncing(false);
     }
@@ -338,7 +310,7 @@ export function TemplateManager() {
       // Route handler scopes the Meta delete via hsm_id (so sibling
       // language variants survive) and falls through to remove the
       // local row. Local-only rows skip the Meta call.
-      const res = await fetch(`/api/whatsapp/templates/${target.id}`, {
+      const res = await _tmplFetch(`/whatsapp/templates/${target.id}`, {
         method: 'DELETE',
       });
       const data = await res.json().catch(() => ({}));
@@ -488,8 +460,8 @@ export function TemplateManager() {
       ) : (
         <div className="grid gap-3">
           {templates.map((template) => {
-            const statusKey = template.status || 'DRAFT';
-            const status = templateStatusConfig[statusKey];
+            const statusKey = (template.status || 'DRAFT').toUpperCase() as keyof typeof templateStatusConfig;
+            const status = templateStatusConfig[statusKey] ?? templateStatusConfig['PENDING'];
             return (
               <Card
                 key={template.id}

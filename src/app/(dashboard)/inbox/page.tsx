@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { whatsapp, conversations as convsApiInbox } from "@/lib/api/client";
 import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
@@ -81,41 +81,19 @@ export default function InboxPage() {
     if (hydratingConvIdsRef.current.has(convId)) return;
     hydratingConvIdsRef.current.add(convId);
     try {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from("conversations")
-        .select("*, contact:contacts(*)")
-        .eq("id", convId)
-        .maybeSingle();
-      if (error) {
-        // Supabase errors have non-enumerable properties — log fields
-        // explicitly so the console message isn't just `{}`.
-        console.error("Failed to hydrate conversation:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-        return;
-      }
-      if (!data) return;
-      const fetched = data as Conversation;
+      const fetched = await convsApiInbox.get(convId) as any;
+      if (!fetched) return;
       setConversations((prev) => {
         const existing = prev.find((c) => c.id === fetched.id);
         if (existing) {
-          // Already in state — keep its fields (a realtime UPDATE may
-          // have landed while the fetch was in flight and patched
-          // last_message_text / unread_count to fresher values than
-          // the row we just read). Only backfill `contact`, which the
-          // realtime payloads never carry.
           return prev.map((c) =>
-            c.id === fetched.id
-              ? { ...c, contact: c.contact ?? fetched.contact }
-              : c,
+            c.id === fetched.id ? { ...c, contact: c.contact ?? fetched.contact } : c,
           );
         }
         return [fetched, ...prev];
       });
+    } catch (err) {
+      console.error("Failed to hydrate conversation:", err);
     } finally {
       hydratingConvIdsRef.current.delete(convId);
     }
@@ -123,27 +101,9 @@ export default function InboxPage() {
 
   // Check WhatsApp connection status on mount
   useEffect(() => {
-    const checkConnection = async () => {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const user = session?.user;
-
-      if (!user) return;
-
-      // Table is `whatsapp_config` (singular) — the previous "whatsapp_configs"
-      // query always returned no rows, so the banner always showed "not connected".
-      const { data } = await supabase
-        .from("whatsapp_config")
-        .select("status")
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      setWhatsappConnected(data?.status === "connected");
-    };
-
-    checkConnection();
+    whatsapp.getConfig()
+      .then(cfg => setWhatsappConnected(cfg?.has_access_token === true))
+      .catch(() => setWhatsappConnected(false));
   }, []);
 
   // Handle realtime message events

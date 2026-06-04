@@ -246,37 +246,83 @@ export function MessageThread({
   useEffect(() => {
     if (!conversationId) return;
 
-    const supabase = createClient();
     let cancelled = false;
 
     (async () => {
       setLoading(true);
-
-      const { data, error } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("conversation_id", conversationId)
-        .order("created_at", { ascending: true });
-
-      if (cancelled) return;
-
-      if (error) {
-        console.error("Failed to fetch messages:", error);
-      } else {
-        onMessagesLoadedRef.current(data ?? []);
+      try {
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
+        const res = await fetch(`${apiBase}/messages/${conversationId}?limit=200`, {
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+        });
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          // Map our API format → wacrm message format for rendering
+          const mapped = (data ?? []).map((m: any) => {
+            // Derive a human-readable content_text from our API format
+            let content_text = '';
+            if (m.type === 'text') {
+              content_text = m.content?.text || '';
+            } else if (m.type === 'template') {
+              const name = m.content?.name || '';
+              content_text = `📋 Template: ${name}`;
+            } else if (m.type === 'note') {
+              content_text = m.content?.text || 'Voice call note';
+            } else if (m.content?.text) {
+              content_text = m.content.text;
+            } else if (m.content?.caption) {
+              content_text = m.content.caption;
+            } else {
+              content_text = `[${m.type}]`;
+            }
+            return {
+              ...m,
+              sender_type: m.direction === 'inbound' ? 'customer' : 'agent',
+              content_type: m.type === 'note' ? 'note' : 'text',
+              content_text,
+              status: m.status || 'sent',
+            };
+          });
+          onMessagesLoadedRef.current(mapped);
+        }
+      } catch (err) {
+        console.error("Failed to fetch messages:", err);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      if (!cancelled) setLoading(false);
     })();
 
-    return () => {
-      cancelled = true;
-    };
-    // `resyncToken` is included so the parent can force a refetch when
-    // the realtime channel reconnects or the tab regains focus —
-    // realtime is best-effort and any message events sent while the WS
-    // was disconnected or throttled are otherwise lost.
+    return () => { cancelled = true; };
+    // `resyncToken` included so parent can force a refetch on reconnect/focus.
   }, [conversationId, resyncToken]);
+
+  // Auto-poll for new messages every 5s (replaces realtime subscription)
+  useEffect(() => {
+    if (!conversationId) return;
+    const poll = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        const token = localStorage.getItem('platform_access_token');
+        fetch(`${apiBase}/messages/${conversationId}?limit=200`, {
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+        }).then(r => r.ok ? r.json() : null).then(data => {
+          if (!data) return;
+          const mapped = data.map((m: any) => {
+            let content_text = '';
+            if (m.type === 'text') content_text = m.content?.text || '';
+            else if (m.type === 'template') content_text = `📋 Template: ${m.content?.name || ''}`;
+            else if (m.type === 'note') content_text = m.content?.text || 'Voice call note';
+            else content_text = m.content?.text || m.content?.caption || `[${m.type}]`;
+            return { ...m, sender_type: m.direction === 'inbound' ? 'customer' : 'agent', content_type: 'text', content_text, status: m.status || 'sent' };
+          });
+          onMessagesLoadedRef.current(mapped);
+        }).catch(() => {});
+      }
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [conversationId]);
 
   // Reactions fetch — pulls the current state from the DB. Kept separate
   // from the channel subscription below so a `resyncToken` bump just
@@ -437,14 +483,14 @@ export function MessageThread({
       setReplyTo(null);
 
       try {
-        const res = await fetch("/api/whatsapp/send", {
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
+        const res = await fetch(`${apiBase}/messages/${conversation.id}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
           body: JSON.stringify({
-            conversation_id: conversation.id,
-            message_type: "text",
-            content_text: text,
-            reply_to_message_id: replyToId,
+            type: "text",
+            content: { text, ...(replyToId ? { reply_to: replyToId } : {}) },
           }),
         });
 
@@ -519,32 +565,25 @@ export function MessageThread({
       onNewMessage(optimisticMsg);
 
       try {
-        const res = await fetch("/api/whatsapp/send", {
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
+        const res = await fetch(`${apiBase}/messages/${conversation.id}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
           body: JSON.stringify({
-            conversation_id: conversation.id,
-            message_type: "template",
-            template_name: template.name,
-            template_language: template.language,
-            // Structured params drive the new send-builder path
-            // (header media + URL button substitution). Body values
-            // are mirrored under both shapes so the route can fall
-            // back if the template row isn't found locally.
-            template_message_params: {
-              body: values.body,
-              headerText: values.headerText,
-              buttonParams: values.buttonParams,
+            type: "template",
+            content: {
+              name: template.name,
+              language: template.language || "en_US",
+              components: values.body.length > 0 ? [{ type: "BODY", parameters: values.body.map(v => ({ type: "text", text: v })) }] : [],
             },
-            template_params: values.body,
-            content_text: renderedBody,
           }),
         });
 
         const payload = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          const reason = payload?.error || `HTTP ${res.status}`;
+          const reason = payload?.detail || payload?.error || `HTTP ${res.status}`;
           console.error("Failed to send template:", reason);
           toast.error(`Failed to send template: ${reason}`);
           onUpdateMessage(tempId, { status: "failed" });

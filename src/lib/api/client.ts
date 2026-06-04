@@ -46,7 +46,8 @@ export class ApiError extends Error {
   }
 }
 
-async function apiFetch<T>(
+/** Exported for use in component-level fetchers — handles JWT auto-refresh */
+export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
   retry = true,

@@ -91,39 +91,38 @@ export function TemplatePicker({
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        if (!cancelled) {
-          setTemplates([]);
-          setLoading(false);
+      try {
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
+        const res = await fetch(`${apiBase}/whatsapp/templates`, {
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+        });
+        if (cancelled) return;
+        if (res.ok) {
+          const all = await res.json();
+          // Only show approved templates (our enum stores lowercase)
+          const approved = all
+            .filter((t: any) => t.status === 'approved' || t.status === 'APPROVED')
+            .map((t: any) => {
+              // Extract body_text from components array if not present directly
+              if (!t.body_text && Array.isArray(t.components)) {
+                const bodyComp = t.components.find((c: any) => c.type === 'BODY' || c.type === 'body');
+                if (bodyComp) t = { ...t, body_text: bodyComp.text || '' };
+              }
+              if (!t.body_text) t = { ...t, body_text: '' };
+              return t;
+            });
+          setTemplates(approved as MessageTemplate[]);
         }
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from("message_templates")
-        .select("*")
-        .eq("user_id", user.id)
-        .eq("status", "APPROVED")
-        .order("created_at", { ascending: false });
-
-      if (cancelled) return;
-      if (error) {
-        console.error("Failed to fetch templates:", error);
+      } catch (err) {
+        console.error("Failed to fetch templates:", err);
         setTemplates([]);
-      } else {
-        setTemplates((data as MessageTemplate[]) ?? []);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      setLoading(false);
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [open]);
 
   function resetSelection() {

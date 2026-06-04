@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { conversations as convsApi } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus } from "@/types";
 import { Search, ChevronDown } from "lucide-react";
@@ -72,39 +72,21 @@ export function ConversationList({
   });
 
   useEffect(() => {
-    const supabase = createClient();
     let cancelled = false;
 
     (async () => {
-      const { data, error } = await supabase
-        .from("conversations")
-        .select("*, contact:contacts(*)")
-        .order("last_message_at", { ascending: false });
-
-      if (cancelled) return;
-
-      if (error) {
-        // Supabase errors have non-enumerable properties — log fields explicitly
-        console.error("Failed to fetch conversations:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-        setLoading(false);
-        return;
+      try {
+        const data = await convsApi.list({ limit: 100 });
+        if (cancelled) return;
+        onConversationsLoadedRef.current((data as any[]) ?? []);
+      } catch (err) {
+        console.error("Failed to fetch conversations:", err);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      onConversationsLoadedRef.current(data ?? []);
-      setLoading(false);
     })();
 
-    return () => {
-      cancelled = true;
-    };
-    // `resyncToken` is included so the parent can force a refetch when
-    // the realtime channel reconnects or the tab regains focus — catches
-    // up on any events sent while the WS was disconnected or throttled.
+    return () => { cancelled = true; };
   }, [resyncToken]);
 
   const filtered = useMemo(() => {
