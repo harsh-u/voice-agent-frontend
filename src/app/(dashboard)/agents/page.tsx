@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Bot, Plus, Trash2, Pencil, Loader2, Cpu, Mic, ChevronDown, ChevronUp, X, Save } from "lucide-react";
+import { Bot, Plus, Trash2, Pencil, Loader2, Cpu, Mic, ChevronDown, ChevronUp, X, Save, BookOpen, Database, Link, Upload, CheckCircle, Clock, AlertCircle } from "lucide-react";
 import { getToken } from "@/lib/api/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -9,7 +9,8 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-interface AgentConfig { id: string; name: string; system_prompt: string | null; voice_id: string | null; llm_model: string | null; tools_json: string | null; sip_trunk_id: string | null; created_at: string; updated_at: string }
+interface AgentConfig { id: string; name: string; system_prompt: string | null; voice_id: string | null; llm_model: string | null; tools_json: string | null; sip_trunk_id: string | null; rag_api_key: string | null; rag_kb_id: string | null; created_at: string; updated_at: string }
+interface KbDocument { id: string; filename: string; source_type: string; status: string; chunk_count: number; size_bytes: number; created_at: string }
 interface VoiceOption { id: string; name: string; provider: string }
 interface ModelOption { id: string; name: string; provider: string; ttft_ms: number; cost_per_min_cents: number; recommended: boolean }
 
@@ -41,6 +42,160 @@ const agentApi = {
 const DEFAULT_PROMPT = `You are a helpful voice AI assistant. Be concise, friendly, and professional.
 Keep responses brief since this is a phone call — 1-2 sentences max unless asked for detail.`;
 
+// ---------------------------------------------------------------------------
+// Knowledge Base Panel
+// ---------------------------------------------------------------------------
+function KnowledgeBasePanel({ agentId, hasKb }: { agentId: string; hasKb: boolean }) {
+  const [docs, setDocs] = useState<KbDocument[]>([]);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const [addingUrl, setAddingUrl] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+
+  const fetchDocs = async () => {
+    if (!hasKb) return;
+    setLoadingDocs(true);
+    try {
+      const data = await apiFetch(`/agents/${agentId}/knowledge/documents`);
+      setDocs(data?.items ?? data ?? []);
+    } catch {
+      toast.error("Failed to load knowledge base documents");
+    } finally {
+      setLoadingDocs(false);
+    }
+  };
+
+  useEffect(() => { fetchDocs(); }, [agentId, hasKb]);
+
+  const handleAddUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!urlInput.trim()) return;
+    setAddingUrl(true);
+    try {
+      await apiFetch(`/agents/${agentId}/knowledge/documents/url`, {
+        method: "POST",
+        body: JSON.stringify({ url: urlInput.trim() }),
+      });
+      toast.success("URL queued for ingestion");
+      setUrlInput("");
+      await fetchDocs();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add URL");
+    } finally {
+      setAddingUrl(false);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingFile(true);
+    try {
+      const token = getToken();
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${BASE}/agents/${agentId}/knowledge/documents`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as any).detail || res.statusText); }
+      toast.success("Document uploaded — processing");
+      e.target.value = "";
+      await fetchDocs();
+    } catch (err: any) {
+      toast.error(err.message || "Upload failed");
+    } finally {
+      setUploadingFile(false);
+    }
+  };
+
+  const handleDelete = async (docId: string) => {
+    try {
+      await apiFetch(`/agents/${agentId}/knowledge/documents/${docId}`, { method: "DELETE" });
+      toast.success("Document removed");
+      setDocs((prev) => prev.filter((d) => d.id !== docId));
+    } catch {
+      toast.error("Failed to delete document");
+    }
+  };
+
+  const statusIcon = (s: string) => {
+    if (s === "done") return <CheckCircle className="h-3.5 w-3.5 text-green-400" />;
+    if (s === "failed") return <AlertCircle className="h-3.5 w-3.5 text-red-400" />;
+    if (s === "processing") return <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />;
+    return <Clock className="h-3.5 w-3.5 text-yellow-400" />;
+  };
+
+  return (
+    <div className="border-t border-slate-800 px-5 py-4">
+      <div className="mb-3 flex items-center gap-2">
+        <BookOpen className="h-4 w-4 text-indigo-400" />
+        <span className="text-sm font-medium text-white">Knowledge Base</span>
+        {hasKb ? (
+          <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-semibold text-green-400">Active</span>
+        ) : (
+          <span className="rounded-full bg-slate-700/50 px-2 py-0.5 text-[10px] text-slate-500">Not configured</span>
+        )}
+      </div>
+
+      {!hasKb ? (
+        <p className="text-xs text-slate-500">No knowledge base configured. Edit this agent and set a KB ID to enable RAG.</p>
+      ) : (
+        <div className="space-y-3">
+          {/* Document list */}
+          {loadingDocs ? (
+            <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading documents…</div>
+          ) : docs.length === 0 ? (
+            <p className="text-xs text-slate-500">No documents yet. Add a URL or upload a file below.</p>
+          ) : (
+            <div className="overflow-hidden rounded-lg border border-slate-800">
+              {docs.map((doc, i) => (
+                <div key={doc.id} className={cn("flex items-center gap-3 px-3 py-2 text-xs", i % 2 === 0 ? "bg-slate-900" : "bg-slate-950/50")}>
+                  {statusIcon(doc.status)}
+                  <span className="flex-1 truncate font-mono text-slate-300">{doc.filename}</span>
+                  {doc.chunk_count > 0 && <span className="text-slate-600">{doc.chunk_count} chunks</span>}
+                  <button onClick={() => handleDelete(doc.id)} className="text-slate-600 hover:text-red-400">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add URL */}
+          <form onSubmit={handleAddUrl} className="flex gap-2">
+            <div className="flex flex-1 items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-2">
+              <Link className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+              <input
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://docs.example.com/page"
+                className="flex-1 bg-transparent py-1.5 text-xs text-white placeholder:text-slate-600 focus:outline-none"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={addingUrl || !urlInput.trim()}
+              className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {addingUrl ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+              Add URL
+            </button>
+          </form>
+
+          {/* File upload */}
+          <label className={cn("flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-slate-700 px-3 py-2 text-xs text-slate-400 hover:border-slate-500 hover:text-white", uploadingFile && "pointer-events-none opacity-50")}>
+            {uploadingFile ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+            {uploadingFile ? "Uploading…" : "Upload PDF, DOCX, or TXT"}
+            <input type="file" accept=".pdf,.docx,.txt" className="hidden" onChange={handleFileUpload} />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentForm({
   agent,
   voices,
@@ -61,6 +216,8 @@ function AgentForm({
   const [llmModel, setLlmModel] = useState(agent?.llm_model ?? "");
   const [toolsJson, setToolsJson] = useState(agent?.tools_json ?? "");
   const [sipTrunkId, setSipTrunkId] = useState(agent?.sip_trunk_id ?? "");
+  const [ragKbId, setRagKbId] = useState(agent?.rag_kb_id ?? "");
+  const [ragApiKey, setRagApiKey] = useState(agent?.rag_api_key ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -79,6 +236,8 @@ function AgentForm({
         llm_model: llmModel || undefined,
         tools_json: toolsJson.trim() || undefined,
         sip_trunk_id: sipTrunkId.trim() || undefined,
+        rag_kb_id: ragKbId.trim() || undefined,
+        rag_api_key: ragApiKey.trim() || undefined,
       };
       if (isEdit && agent) {
         await agentApi.update(agent.id, payload);
@@ -221,6 +380,35 @@ function AgentForm({
               placeholder="ST_xxxxxx (override default trunk)"
               className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-white placeholder:text-slate-600 focus:border-primary focus:outline-none"
             />
+          </div>
+          <div className="border-t border-slate-700/50 pt-3">
+            <div className="mb-2 flex items-center gap-1.5">
+              <Database className="h-3.5 w-3.5 text-indigo-400" />
+              <span className="text-xs font-semibold text-slate-300">Knowledge Base (RAG)</span>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-400">Knowledge Base ID</label>
+                <input
+                  value={ragKbId}
+                  onChange={(e) => setRagKbId(e.target.value)}
+                  placeholder="kb_xxxxxxxx"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-white placeholder:text-slate-600 focus:border-indigo-500 focus:outline-none"
+                />
+                <p className="mt-1 text-xs text-slate-600">KB ID from your VoiceRAG service.</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-400">KB API Key</label>
+                <input
+                  value={ragApiKey}
+                  onChange={(e) => setRagApiKey(e.target.value)}
+                  placeholder="vrag_..."
+                  type="password"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-white placeholder:text-slate-600 focus:border-indigo-500 focus:outline-none"
+                />
+                <p className="mt-1 text-xs text-slate-600">API key scoped to this KB. Agent will query it during calls.</p>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -404,6 +592,15 @@ export default function AgentsPage() {
                         </span>
                       </>
                     )}
+                    {agent.rag_kb_id && (
+                      <>
+                        <span className="text-slate-700">·</span>
+                        <span className="flex items-center gap-1 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium text-indigo-400">
+                          <Database className="h-2.5 w-2.5" />
+                          KB enabled
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -436,20 +633,23 @@ export default function AgentsPage() {
                 </div>
               </div>
 
-              {/* Expandable prompt */}
+              {/* Expandable prompt + knowledge base */}
               {expanded === agent.id && (
-                <div className="border-t border-slate-800 bg-slate-950/50 px-5 py-4">
-                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                    System Prompt
-                  </p>
-                  <pre className="whitespace-pre-wrap font-mono text-xs text-slate-300 leading-relaxed">
-                    {agent.system_prompt || "(no prompt set)"}
-                  </pre>
-                  {agent.sip_trunk_id && (
-                    <p className="mt-3 text-[10px] text-slate-600">
-                      SIP Trunk: <span className="font-mono text-slate-500">{agent.sip_trunk_id}</span>
+                <div className="bg-slate-950/50">
+                  <div className="border-t border-slate-800 px-5 py-4">
+                    <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      System Prompt
                     </p>
-                  )}
+                    <pre className="whitespace-pre-wrap font-mono text-xs text-slate-300 leading-relaxed">
+                      {agent.system_prompt || "(no prompt set)"}
+                    </pre>
+                    {agent.sip_trunk_id && (
+                      <p className="mt-3 text-[10px] text-slate-600">
+                        SIP Trunk: <span className="font-mono text-slate-500">{agent.sip_trunk_id}</span>
+                      </p>
+                    )}
+                  </div>
+                  <KnowledgeBasePanel agentId={agent.id} hasKb={!!agent.rag_kb_id} />
                 </div>
               )}
             </div>
