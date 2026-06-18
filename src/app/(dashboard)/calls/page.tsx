@@ -335,7 +335,7 @@ export default function CallsPage() {
     fetch(`${base}/calls?${qs}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
       .then((res) => { setCallList(res.items); setTotal(res.total); })
-      .catch(console.error)
+      .catch(() => {})
       .finally(() => setLoading(false));
   };
 

@@ -16,6 +16,8 @@ import {
   Workflow,
   Phone,
   Bot,
+  Library,
+  Activity,
   Settings,
   LogOut,
   User,
@@ -55,6 +57,8 @@ const navItems: NavItem[] = [
   { href: "/flows", label: "Flows", icon: Workflow, beta: true },
   { href: "/calls", label: "Calls", icon: Phone },
   { href: "/agents", label: "Voice Agents", icon: Bot },
+  { href: "/knowledge", label: "Knowledge", icon: Library },
+  { href: "/observability", label: "Observability", icon: Activity },
 ];
 
 const bottomNavItems = [

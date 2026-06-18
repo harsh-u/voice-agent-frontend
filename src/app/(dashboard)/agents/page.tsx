@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Bot, Plus, Trash2, Pencil, Loader2, Cpu, Mic, ChevronDown, ChevronUp, X, Save, BookOpen, Database, Link, Upload, CheckCircle, Clock, AlertCircle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Bot, Plus, Trash2, Pencil, Loader2, Cpu, Mic, ChevronDown, ChevronUp, X, Save, BookOpen, Database, Link, Upload, CheckCircle, Clock, AlertCircle, Copy } from "lucide-react";
 import { getToken } from "@/lib/api/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -9,8 +9,9 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-interface AgentConfig { id: string; name: string; system_prompt: string | null; voice_id: string | null; llm_model: string | null; tools_json: string | null; sip_trunk_id: string | null; rag_api_key: string | null; rag_kb_id: string | null; created_at: string; updated_at: string }
+interface AgentConfig { id: string; name: string; system_prompt: string | null; voice_id: string | null; llm_model: string | null; tools_json: string | null; sip_trunk_id: string | null; rag_kb_id: string | null; rag_enabled?: boolean; created_at: string; updated_at: string }
 interface KbDocument { id: string; filename: string; source_type: string; status: string; chunk_count: number; size_bytes: number; created_at: string }
+interface KnowledgeBaseOption { id: string; name: string; doc_count: number }
 interface VoiceOption { id: string; name: string; provider: string }
 interface ModelOption { id: string; name: string; provider: string; ttft_ms: number; cost_per_min_cents: number; recommended: boolean }
 
@@ -31,16 +32,48 @@ async function apiFetch(path: string, opts: RequestInit = {}) {
 }
 
 const agentApi = {
-  list:   ()                        => apiFetch('/agents') as Promise<AgentConfig[]>,
-  create: (d: Partial<AgentConfig>) => apiFetch('/agents', { method: 'POST', body: JSON.stringify(d) }) as Promise<AgentConfig>,
-  update: (id: string, d: Partial<AgentConfig>) => apiFetch(`/agents/${id}`, { method: 'PATCH', body: JSON.stringify(d) }) as Promise<AgentConfig>,
-  delete: (id: string)              => apiFetch(`/agents/${id}`, { method: 'DELETE' }),
-  voices: ()                        => apiFetch('/agents/options/voices') as Promise<VoiceOption[]>,
-  models: ()                        => apiFetch('/agents/options/models') as Promise<ModelOption[]>,
+  list:      ()                         => apiFetch('/agents') as Promise<AgentConfig[]>,
+  create:    (d: Partial<AgentConfig>)  => apiFetch('/agents', { method: 'POST', body: JSON.stringify(d) }) as Promise<AgentConfig>,
+  update:    (id: string, d: Partial<AgentConfig>) => apiFetch(`/agents/${id}`, { method: 'PATCH', body: JSON.stringify(d) }) as Promise<AgentConfig>,
+  delete:    (id: string)               => apiFetch(`/agents/${id}`, { method: 'DELETE' }),
+  voices:    ()                         => apiFetch('/agents/options/voices') as Promise<VoiceOption[]>,
+  models:    ()                         => apiFetch('/agents/options/models') as Promise<ModelOption[]>,
+  knowledgeBases: ()                    => apiFetch('/rag/knowledge-bases') as Promise<KnowledgeBaseOption[]>,
 }
 
 const DEFAULT_PROMPT = `You are a helpful voice AI assistant. Be concise, friendly, and professional.
 Keep responses brief since this is a phone call — 1-2 sentences max unless asked for detail.`;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Append provider to voice name if not already mentioned (e.g. "Calm Professional · Cartesia")
+function voiceOptionLabel(v: VoiceOption): string {
+  const providerInName = v.name.toLowerCase().includes(v.provider.toLowerCase());
+  if (providerInName) return v.name;
+  const cap = v.provider.charAt(0).toUpperCase() + v.provider.slice(1);
+  return `${v.name} · ${cap}`;
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+// ---------------------------------------------------------------------------
+// Auto-resize textarea hook
+// ---------------------------------------------------------------------------
+function useAutoResize(value: string) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+  return ref;
+}
 
 // ---------------------------------------------------------------------------
 // Knowledge Base Panel
@@ -143,7 +176,6 @@ function KnowledgeBasePanel({ agentId, hasKb }: { agentId: string; hasKb: boolea
         <p className="text-xs text-slate-500">No knowledge base configured. Edit this agent and set a KB ID to enable RAG.</p>
       ) : (
         <div className="space-y-3">
-          {/* Document list */}
           {loadingDocs ? (
             <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading documents…</div>
           ) : docs.length === 0 ? (
@@ -163,7 +195,6 @@ function KnowledgeBasePanel({ agentId, hasKb }: { agentId: string; hasKb: boolea
             </div>
           )}
 
-          {/* Add URL */}
           <form onSubmit={handleAddUrl} className="flex gap-2">
             <div className="flex flex-1 items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-2">
               <Link className="h-3.5 w-3.5 shrink-0 text-slate-500" />
@@ -184,7 +215,6 @@ function KnowledgeBasePanel({ agentId, hasKb }: { agentId: string; hasKb: boolea
             </button>
           </form>
 
-          {/* File upload */}
           <label className={cn("flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-slate-700 px-3 py-2 text-xs text-slate-400 hover:border-slate-500 hover:text-white", uploadingFile && "pointer-events-none opacity-50")}>
             {uploadingFile ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
             {uploadingFile ? "Uploading…" : "Upload PDF, DOCX, or TXT"}
@@ -196,6 +226,9 @@ function KnowledgeBasePanel({ agentId, hasKb }: { agentId: string; hasKb: boolea
   );
 }
 
+// ---------------------------------------------------------------------------
+// Agent Form
+// ---------------------------------------------------------------------------
 function AgentForm({
   agent,
   voices,
@@ -214,19 +247,34 @@ function AgentForm({
   const [systemPrompt, setSystemPrompt] = useState(agent?.system_prompt ?? DEFAULT_PROMPT);
   const [voiceId, setVoiceId] = useState(agent?.voice_id ?? "");
   const [llmModel, setLlmModel] = useState(agent?.llm_model ?? "");
+  const [ragKbId, setRagKbId] = useState(agent?.rag_kb_id ?? "");
+  const [kbs, setKbs] = useState<KnowledgeBaseOption[]>([]);
   const [toolsJson, setToolsJson] = useState(agent?.tools_json ?? "");
   const [sipTrunkId, setSipTrunkId] = useState(agent?.sip_trunk_id ?? "");
-  const [ragKbId, setRagKbId] = useState(agent?.rag_kb_id ?? "");
-  const [ragApiKey, setRagApiKey] = useState(agent?.rag_api_key ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [nameError, setNameError] = useState("");
+  const [promptError, setPromptError] = useState("");
+
+  const promptRef = useAutoResize(systemPrompt);
+
+  // Load the in-app knowledge bases so the user can attach one by name.
+  useEffect(() => {
+    agentApi.knowledgeBases().then(setKbs).catch(() => setKbs([]));
+  }, []);
+
+  const validate = useCallback(() => {
+    let ok = true;
+    if (!name.trim()) { setNameError("Agent name is required"); ok = false; }
+    else setNameError("");
+    if (!systemPrompt.trim()) { setPromptError("System prompt is required"); ok = false; }
+    else setPromptError("");
+    return ok;
+  }, [name, systemPrompt]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !systemPrompt.trim()) {
-      toast.error("Name and system prompt are required");
-      return;
-    }
+    if (!validate()) return;
     setSaving(true);
     try {
       const payload = {
@@ -234,10 +282,10 @@ function AgentForm({
         system_prompt: systemPrompt.trim(),
         voice_id: voiceId || undefined,
         llm_model: llmModel || undefined,
+        // Empty string clears the attachment; backend mints/clears the managed key.
+        rag_kb_id: ragKbId.trim(),
         tools_json: toolsJson.trim() || undefined,
         sip_trunk_id: sipTrunkId.trim() || undefined,
-        rag_kb_id: ragKbId.trim() || undefined,
-        rag_api_key: ragApiKey.trim() || undefined,
       };
       if (isEdit && agent) {
         await agentApi.update(agent.id, payload);
@@ -255,7 +303,7 @@ function AgentForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} noValidate className="space-y-5">
       {/* Name */}
       <div>
         <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -263,11 +311,15 @@ function AgentForm({
         </label>
         <input
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => { setName(e.target.value); if (nameError) setNameError(""); }}
+          onBlur={() => { if (!name.trim()) setNameError("Agent name is required"); }}
           placeholder="e.g. Sales SDR, Support Bot"
-          required
-          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-primary focus:outline-none"
+          className={cn(
+            "w-full rounded-lg border bg-slate-800 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none",
+            nameError ? "border-red-500 focus:border-red-500" : "border-slate-700 focus:border-primary"
+          )}
         />
+        {nameError && <p className="mt-1 text-xs text-red-400">{nameError}</p>}
       </div>
 
       {/* System Prompt */}
@@ -276,16 +328,21 @@ function AgentForm({
           System Prompt *
         </label>
         <textarea
+          ref={promptRef}
           value={systemPrompt}
-          onChange={(e) => setSystemPrompt(e.target.value)}
-          rows={8}
-          required
+          onChange={(e) => { setSystemPrompt(e.target.value); if (promptError) setPromptError(""); }}
+          onBlur={() => { if (!systemPrompt.trim()) setPromptError("System prompt is required"); }}
+          rows={6}
           placeholder="You are a helpful voice AI assistant..."
-          className="w-full resize-y rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-500 focus:border-primary focus:outline-none"
+          className={cn(
+            "w-full resize-none overflow-hidden rounded-lg border bg-slate-800 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-500 focus:outline-none",
+            promptError ? "border-red-500 focus:border-red-500" : "border-slate-700 focus:border-primary"
+          )}
         />
-        <p className="mt-1 text-xs text-slate-500">
-          Keep responses brief — this is a live phone call. Instruct the agent to speak in 1–2 sentences.
-        </p>
+        {promptError
+          ? <p className="mt-1 text-xs text-red-400">{promptError}</p>
+          : <p className="mt-1 text-xs text-slate-500">Keep responses brief — this is a live phone call. Instruct the agent to speak in 1–2 sentences.</p>
+        }
       </div>
 
       {/* Voice */}
@@ -301,7 +358,7 @@ function AgentForm({
           <option value="">Use default voice</option>
           {voices.map((v) => (
             <option key={v.id} value={v.id}>
-              {v.name}
+              {voiceOptionLabel(v)}
             </option>
           ))}
         </select>
@@ -343,6 +400,41 @@ function AgentForm({
         </div>
       </div>
 
+      {/* Knowledge Base (RAG) — top-level, not in Advanced */}
+      <div className="rounded-lg border border-slate-700/50 bg-slate-800/40 p-4">
+        <div className="mb-3 flex items-center gap-1.5">
+          <Database className="h-3.5 w-3.5 text-indigo-400" />
+          <span className="text-xs font-semibold text-slate-300">Knowledge Base (RAG)</span>
+          <span className="text-[10px] text-slate-600">— optional</span>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-400">Knowledge Base</label>
+            <select
+              value={ragKbId}
+              onChange={(e) => setRagKbId(e.target.value)}
+              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+            >
+              <option value="">None — no knowledge base</option>
+              {kbs.map((kb) => (
+                <option key={kb.id} value={kb.id}>
+                  {kb.name} ({kb.doc_count} docs)
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-slate-600">
+              Attach a knowledge base so this agent can answer from your documents during calls.
+              Create and manage knowledge bases in the <span className="text-slate-400">Knowledge</span> section.
+            </p>
+            {kbs.length === 0 && (
+              <p className="mt-1 text-xs text-amber-500/80">
+                No knowledge bases yet — create one in the Knowledge section first.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Advanced toggle */}
       <button
         type="button"
@@ -356,9 +448,7 @@ function AgentForm({
       {showAdvanced && (
         <div className="space-y-4 rounded-lg border border-slate-700/50 bg-slate-800/40 p-4">
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-400">
-              Tools JSON
-            </label>
+            <label className="mb-1 block text-xs font-medium text-slate-400">Tools JSON</label>
             <textarea
               value={toolsJson}
               onChange={(e) => setToolsJson(e.target.value)}
@@ -366,49 +456,16 @@ function AgentForm({
               placeholder='[{"type": "function", "function": {...}}]'
               className="w-full resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-white placeholder:text-slate-600 focus:border-primary focus:outline-none"
             />
-            <p className="mt-1 text-xs text-slate-600">
-              OpenAI-format function tools the agent can call during the conversation.
-            </p>
+            <p className="mt-1 text-xs text-slate-600">OpenAI-format function tools the agent can call during the conversation.</p>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-400">
-              SIP Trunk ID
-            </label>
+            <label className="mb-1 block text-xs font-medium text-slate-400">SIP Trunk ID</label>
             <input
               value={sipTrunkId}
               onChange={(e) => setSipTrunkId(e.target.value)}
               placeholder="ST_xxxxxx (override default trunk)"
               className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-white placeholder:text-slate-600 focus:border-primary focus:outline-none"
             />
-          </div>
-          <div className="border-t border-slate-700/50 pt-3">
-            <div className="mb-2 flex items-center gap-1.5">
-              <Database className="h-3.5 w-3.5 text-indigo-400" />
-              <span className="text-xs font-semibold text-slate-300">Knowledge Base (RAG)</span>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-400">Knowledge Base ID</label>
-                <input
-                  value={ragKbId}
-                  onChange={(e) => setRagKbId(e.target.value)}
-                  placeholder="kb_xxxxxxxx"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-white placeholder:text-slate-600 focus:border-indigo-500 focus:outline-none"
-                />
-                <p className="mt-1 text-xs text-slate-600">KB ID from your VoiceRAG service.</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-400">KB API Key</label>
-                <input
-                  value={ragApiKey}
-                  onChange={(e) => setRagApiKey(e.target.value)}
-                  placeholder="vrag_..."
-                  type="password"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-white placeholder:text-slate-600 focus:border-indigo-500 focus:outline-none"
-                />
-                <p className="mt-1 text-xs text-slate-600">API key scoped to this KB. Agent will query it during calls.</p>
-              </div>
-            </div>
           </div>
         </div>
       )}
@@ -435,6 +492,34 @@ function AgentForm({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Delete confirmation inline component
+// ---------------------------------------------------------------------------
+function DeleteConfirm({ onConfirm, onCancel, loading }: { onConfirm: () => void; onCancel: () => void; loading: boolean }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-slate-400">Delete this agent?</span>
+      <button
+        onClick={onConfirm}
+        disabled={loading}
+        className="flex items-center gap-1 rounded-md bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+      >
+        {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+        Yes, delete
+      </button>
+      <button
+        onClick={onCancel}
+        className="rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-400 hover:bg-slate-800"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
 export default function AgentsPage() {
   const [agentList, setAgentList] = useState<AgentConfig[]>([]);
   const [loading, setLoading] = useState(true);
@@ -443,21 +528,25 @@ export default function AgentsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editAgent, setEditAgent] = useState<AgentConfig | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const loadAll = async () => {
     setLoading(true);
+    // Load voices and models independently — they don't hit the DB and
+    // should not be blocked by agent list failures.
     try {
-      const [list, v, m] = await Promise.all([
-        agentApi.list(),
-        agentApi.voices(),
-        agentApi.models(),
-      ]);
-      setAgentList(list);
+      const [v, m] = await Promise.all([agentApi.voices(), agentApi.models()]);
       setVoices(v);
       setModels(m);
+    } catch {
+      // Non-critical — form still works, just no options shown
+    }
+    try {
+      const list = await agentApi.list();
+      setAgentList(list);
     } catch (e: any) {
-      toast.error("Failed to load agents");
+      toast.error(e.message || "Failed to load agents");
     } finally {
       setLoading(false);
     }
@@ -468,12 +557,12 @@ export default function AgentsPage() {
   }, []);
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this agent? This cannot be undone.")) return;
     setDeleting(id);
     try {
       await agentApi.delete(id);
       toast.success("Agent deleted");
       setAgentList((prev) => prev.filter((a) => a.id !== id));
+      setConfirmDeleteId(null);
     } catch {
       toast.error("Failed to delete agent");
     } finally {
@@ -481,24 +570,30 @@ export default function AgentsPage() {
     }
   };
 
-  const openCreate = () => {
-    setEditAgent(null);
-    setFormOpen(true);
+  const handleDuplicate = async (agent: AgentConfig) => {
+    try {
+      const created = await agentApi.create({
+        name: `${agent.name} (copy)`,
+        system_prompt: agent.system_prompt ?? "",
+        voice_id: agent.voice_id ?? undefined,
+        llm_model: agent.llm_model ?? undefined,
+        tools_json: agent.tools_json ?? undefined,
+        sip_trunk_id: agent.sip_trunk_id ?? undefined,
+        rag_kb_id: agent.rag_kb_id ?? undefined,
+      });
+      setAgentList((prev) => [...prev, created]);
+      toast.success("Agent duplicated");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to duplicate agent");
+    }
   };
 
-  const openEdit = (agent: AgentConfig) => {
-    setEditAgent(agent);
-    setFormOpen(true);
-  };
-
-  const handleSaved = () => {
-    setFormOpen(false);
-    setEditAgent(null);
-    loadAll();
-  };
+  const openCreate = () => { setEditAgent(null); setFormOpen(true); };
+  const openEdit = (agent: AgentConfig) => { setEditAgent(agent); setFormOpen(true); };
+  const handleSaved = () => { setFormOpen(false); setEditAgent(null); loadAll(); };
 
   const voiceLabel = (id: string | null) =>
-    voices.find((v) => v.id === id)?.name ?? "Default voice";
+    voices.find((v) => v.id === id)?.name ?? "Default (Cartesia Sonic)";
   const modelLabel = (id: string | null) =>
     models.find((m) => m.id === id)?.name ?? "Default model";
 
@@ -521,7 +616,7 @@ export default function AgentsPage() {
         </button>
       </div>
 
-      {/* Form panel (inline slide-in) */}
+      {/* Form panel (inline) */}
       {formOpen && (
         <div className="rounded-xl border border-slate-700 bg-slate-900 p-6">
           <div className="mb-5 flex items-center justify-between">
@@ -601,35 +696,51 @@ export default function AgentsPage() {
                         </span>
                       </>
                     )}
+                    <span className="text-slate-700">·</span>
+                    <span className="text-[10px] text-slate-600">
+                      Created {formatDate(agent.created_at)}
+                    </span>
                   </div>
                 </div>
 
                 <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    onClick={() => setExpanded(expanded === agent.id ? null : agent.id)}
-                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
-                  >
-                    {expanded === agent.id ? "Hide prompt" : "View prompt"}
-                  </button>
-                  <button
-                    onClick={() => openEdit(agent)}
-                    className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
-                    title="Edit"
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(agent.id)}
-                    disabled={deleting === agent.id}
-                    className="rounded-lg p-1.5 text-slate-400 hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40"
-                    title="Delete"
-                  >
-                    {deleting === agent.id ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-4 w-4" />
-                    )}
-                  </button>
+                  {confirmDeleteId === agent.id ? (
+                    <DeleteConfirm
+                      onConfirm={() => handleDelete(agent.id)}
+                      onCancel={() => setConfirmDeleteId(null)}
+                      loading={deleting === agent.id}
+                    />
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => setExpanded(expanded === agent.id ? null : agent.id)}
+                        className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
+                      >
+                        {expanded === agent.id ? "Hide prompt" : "View prompt"}
+                      </button>
+                      <button
+                        onClick={() => handleDuplicate(agent)}
+                        className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                        title="Duplicate"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => openEdit(agent)}
+                        className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                        title="Edit"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(agent.id)}
+                        className="rounded-lg p-1.5 text-slate-400 hover:bg-red-500/10 hover:text-red-400"
+                        title="Delete"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
 

@@ -428,3 +428,105 @@ export interface CallDetail extends Call {
   agent_config_id?: string; contact_id?: string
   turns: Array<{ id: string; role: string; text: string; started_at: string; latency_ms?: number }>
 }
+
+// ---------------------------------------------------------------------------
+// Knowledge bases (merged RAG engine — mounted under /rag)
+// ---------------------------------------------------------------------------
+
+export interface KnowledgeBase {
+  id: string; name: string; description?: string | null; collection_name: string
+  embedding_model?: string | null; enable_hybrid: boolean
+  doc_count: number; chunk_count: number; created_at: string; updated_at: string
+}
+export interface KnowledgeDocument {
+  id: string; filename: string; source_type: string; source_url?: string | null
+  status: string; error?: string | null; chunk_count: number
+  size_bytes?: number | null; created_at: string; updated_at: string
+}
+
+export const knowledge = {
+  list: () => apiFetch<KnowledgeBase[]>('/rag/knowledge-bases'),
+  get: (id: string) => apiFetch<KnowledgeBase>(`/rag/knowledge-bases/${id}`),
+  create: (data: { name: string; description?: string; enable_hybrid?: boolean }) =>
+    apiFetch<KnowledgeBase>('/rag/knowledge-bases', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: { name?: string; description?: string }) =>
+    apiFetch<KnowledgeBase>(`/rag/knowledge-bases/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  remove: (id: string) => apiFetch<void>(`/rag/knowledge-bases/${id}`, { method: 'DELETE' }),
+  documents: {
+    list: (kbId: string) => apiFetch<KnowledgeDocument[]>(`/rag/knowledge-bases/${kbId}/documents`),
+    addUrl: (kbId: string, url: string, title?: string) =>
+      apiFetch<KnowledgeDocument>(`/rag/knowledge-bases/${kbId}/documents/url`, {
+        method: 'POST', body: JSON.stringify({ url, title }),
+      }),
+    remove: (kbId: string, docId: string) =>
+      apiFetch<void>(`/rag/knowledge-bases/${kbId}/documents/${docId}`, { method: 'DELETE' }),
+    // Multipart upload — bypasses the JSON apiFetch default but keeps the Bearer token.
+    upload: async (kbId: string, file: File): Promise<KnowledgeDocument> => {
+      const token = getToken()
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await fetch(`${API_URL}/rag/knowledge-bases/${kbId}/documents`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      })
+      if (!res.ok) {
+        let detail: unknown
+        try { detail = await res.json() } catch { detail = await res.text() }
+        const msg = (detail as { detail?: string })?.detail || res.statusText
+        throw new ApiError(res.status, msg as string, detail)
+      }
+      return res.json() as Promise<KnowledgeDocument>
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Observability (merged VoxScope engine — mounted under /observability)
+// ---------------------------------------------------------------------------
+
+export interface ObservabilityProject {
+  id: string; user_id: string; name: string
+  sample_rate: number; slow_threshold_ms: number; created_at: string
+}
+export interface ObservabilityTrace {
+  id: string; external_call_id?: string; framework?: string
+  status: string; started_at?: string; ended_at?: string; duration_ms?: number | null
+  e2e_p50_ms?: number | null; e2e_p95_ms?: number | null; e2e_p99_ms?: number | null
+  turn_count: number; cost_cents?: number | null; sampled: boolean; created_at: string
+}
+export interface TraceSpan {
+  id: string; component: string; name: string
+  start_ms: number; end_ms?: number | null; duration_ms?: number | null
+  ttfb_ms?: number | null; error?: string | null; fields?: Record<string, unknown>
+}
+export interface TraceTurn {
+  id: string; turn_index: number; role: string
+  user_transcript?: string | null; agent_transcript?: string | null
+  response_latency_ms?: number | null; ttfb_ms?: number | null
+  started_at?: string; ended_at?: string; spans: TraceSpan[]
+}
+export interface TraceDetail extends ObservabilityTrace { turns: TraceTurn[] }
+export interface LatencyMetric {
+  component: string | null; count: number
+  p50_ms?: number | null; p95_ms?: number | null; p99_ms?: number | null
+  error_count: number; cost_cents?: number | null
+}
+
+export const observability = {
+  projects: () => apiFetch<ObservabilityProject[]>('/observability/v1/projects'),
+  traces: (projectId: string, params?: { page?: number; limit?: number; status?: string; framework?: string }) => {
+    const qs = new URLSearchParams({ project_id: projectId })
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.limit) qs.set('limit', String(params.limit))
+    if (params?.status) qs.set('status', params.status)
+    if (params?.framework) qs.set('framework', params.framework)
+    return apiFetch<{ traces: ObservabilityTrace[]; total_count: number }>(`/observability/v1/traces?${qs}`)
+  },
+  trace: (id: string) => apiFetch<TraceDetail>(`/observability/v1/traces/${id}`),
+  latency: (projectId: string, component?: string) => {
+    const qs = new URLSearchParams({ project_id: projectId })
+    if (component) qs.set('component', component)
+    return apiFetch<{ metrics: LatencyMetric[] }>(`/observability/v1/metrics/latency?${qs}`)
+  },
+}
